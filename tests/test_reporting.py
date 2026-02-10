@@ -1,7 +1,7 @@
 """Unit tests for reporting and visualization modules."""
 
 import pytest
-import torch
+import json
 from pathlib import Path
 import tempfile
 
@@ -14,168 +14,160 @@ class TestBenchmarkResults:
     @pytest.fixture
     def results(self):
         """Create sample benchmark results."""
-        return BenchmarkResults(
-            benchmark_name="test_benchmark",
-            timestamp="2025-02-09T10:30:00Z",
-        )
+        return BenchmarkResults(output_dir=tempfile.mkdtemp())
 
     def test_init(self, results):
         """Test BenchmarkResults initialization."""
-        assert results.benchmark_name == "test_benchmark"
-        assert results.timestamp == "2025-02-09T10:30:00Z"
         assert len(results.results) == 0
 
     def test_add_result(self, results):
         """Test adding results."""
         results.add_result(
             model_name="dinov2",
+            arch="vit_base",
             dataset="cifar100",
-            metric="knn_top1",
-            value=0.85,
+            eval_type="knn",
+            metrics={"top1_accuracy": 85.0, "top5_accuracy": 95.0},
         )
 
         assert len(results.results) == 1
         result = results.results[0]
         assert result["model_name"] == "dinov2"
         assert result["dataset"] == "cifar100"
-        assert result["metric"] == "knn_top1"
-        assert result["value"] == 0.85
+        assert result["eval_type"] == "knn"
+        assert result["top1_accuracy"] == 85.0
 
     def test_add_multiple_results(self, results):
         """Test adding multiple results."""
         for i in range(5):
             results.add_result(
                 model_name=f"model_{i}",
+                arch="vit_base",
                 dataset="cifar100",
-                metric="knn_top1",
-                value=0.80 + i * 0.01,
+                eval_type="knn",
+                metrics={"top1_accuracy": 80.0 + i},
             )
 
         assert len(results.results) == 5
 
-    def test_get_model_results(self, results):
-        """Test filtering results by model."""
-        results.add_result("dinov2", "cifar100", "knn_top1", 0.85)
-        results.add_result("dinov2", "imagenet1k", "knn_top1", 0.92)
-        results.add_result("ijepa", "cifar100", "knn_top1", 0.80)
-
-        dinov2_results = results.get_model_results("dinov2")
-        assert len(dinov2_results) == 2
-        assert all(r["model_name"] == "dinov2" for r in dinov2_results)
-
-    def test_get_dataset_results(self, results):
+    def test_filter_by_dataset(self, results):
         """Test filtering results by dataset."""
-        results.add_result("dinov2", "cifar100", "knn_top1", 0.85)
-        results.add_result("ijepa", "cifar100", "knn_top1", 0.80)
-        results.add_result("dinov2", "imagenet1k", "knn_top1", 0.92)
+        results.add_result("dinov2", "vit_base", "cifar100", "knn", {"top1_accuracy": 85.0})
+        results.add_result("dinov2", "vit_base", "imagenet1k", "knn", {"top1_accuracy": 92.0})
+        results.add_result("ijepa", "vit_huge", "cifar100", "knn", {"top1_accuracy": 80.0})
 
-        cifar_results = results.get_dataset_results("cifar100")
+        cifar_results = results._filter(dataset="cifar100")
         assert len(cifar_results) == 2
         assert all(r["dataset"] == "cifar100" for r in cifar_results)
 
+    def test_filter_by_eval_type(self, results):
+        """Test filtering results by eval type."""
+        results.add_result("dinov2", "vit_base", "cifar100", "knn", {"top1_accuracy": 85.0})
+        results.add_result("dinov2", "vit_base", "cifar100", "linear_probe", {"top1_accuracy": 88.0})
+
+        knn_results = results._filter(eval_type="knn")
+        assert len(knn_results) == 1
+        assert knn_results[0]["eval_type"] == "knn"
+
     def test_comparison_table(self, results):
         """Test generating comparison table."""
-        # Add sample results
-        models = ["dinov2", "ijepa", "mae"]
-        datasets = ["cifar100", "imagenet1k"]
+        models = [("dinov2", "vit_base"), ("ijepa", "vit_huge"), ("mae", "vit_base")]
 
-        for model in models:
-            for dataset in datasets:
-                value = 0.80 if dataset == "cifar100" else 0.85
-                results.add_result(model, dataset, "knn_top1", value)
+        for model_name, arch in models:
+            results.add_result(
+                model_name, arch, "cifar100", "knn",
+                {"top1_accuracy": 80.0, "top5_accuracy": 95.0},
+            )
 
-        table = results.comparison_table(metric="knn_top1")
-        assert "dinov2" in table
-        assert "ijepa" in table
-        assert "mae" in table
-        assert "cifar100" in table
-        assert "imagenet1k" in table
+        table = results.generate_comparison_table(dataset="cifar100", eval_type="knn")
+        assert "Dinov2" in table
+        assert "Ijepa" in table
+        assert "Mae" in table
+        assert "CIFAR-100" in table
 
-    def test_to_markdown(self, results):
-        """Test markdown export."""
-        results.add_result("dinov2", "cifar100", "knn_top1", 0.85)
-        results.add_result("ijepa", "cifar100", "knn_top1", 0.80)
+    def test_comparison_table_empty(self, results):
+        """Test comparison table with no matching results."""
+        table = results.generate_comparison_table(dataset="cifar100", eval_type="knn")
+        assert "No results found" in table
 
-        markdown = results.to_markdown()
-        assert isinstance(markdown, str)
-        assert len(markdown) > 0
-        assert "dinov2" in markdown or "Benchmark Results" in markdown
+    def test_generate_full_report(self, results):
+        """Test full report generation."""
+        results.add_result("dinov2", "vit_base", "cifar100", "knn", {"top1_accuracy": 85.0})
+        results.add_result("ijepa", "vit_huge", "cifar100", "knn", {"top1_accuracy": 80.0})
 
-    def test_empty_results_markdown(self, results):
-        """Test markdown export with empty results."""
-        markdown = results.to_markdown()
-        assert isinstance(markdown, str)
-        # Should still produce valid markdown
-        assert len(markdown) > 0
+        report = results.generate_full_report(
+            datasets=["cifar100"],
+            eval_types=["knn"],
+        )
+        assert isinstance(report, str)
+        assert len(report) > 0
+        assert "SSL Benchmark Report" in report
 
-    def test_summary_stats(self, results):
-        """Test computing summary statistics."""
-        results.add_result("dinov2", "cifar100", "knn_top1", 0.85)
-        results.add_result("dinov2", "cifar100", "knn_top5", 0.95)
-        results.add_result("ijepa", "cifar100", "knn_top1", 0.80)
+    def test_empty_results_report(self, results):
+        """Test report with empty results."""
+        report = results.generate_full_report(
+            datasets=["cifar100"],
+            eval_types=["knn"],
+        )
+        assert isinstance(report, str)
+        assert len(report) > 0
 
-        summary = results.summary_stats()
-        assert isinstance(summary, dict)
-        # Basic structure checks
-        assert isinstance(summary, dict)
+    def test_len(self, results):
+        """Test __len__."""
+        assert len(results) == 0
+        results.add_result("dinov2", "vit_base", "cifar100", "knn", {"top1_accuracy": 85.0})
+        assert len(results) == 1
+
+    def test_repr(self, results):
+        """Test __repr__."""
+        r = repr(results)
+        assert "BenchmarkResults" in r
 
     def test_save_and_load(self, results):
         """Test saving and loading results."""
-        # Add some results
-        results.add_result("dinov2", "cifar100", "knn_top1", 0.85)
-        results.add_result("ijepa", "cifar100", "knn_top1", 0.80)
+        results.add_result("dinov2", "vit_base", "cifar100", "knn", {"top1_accuracy": 85.0})
+        results.add_result("ijepa", "vit_huge", "cifar100", "knn", {"top1_accuracy": 80.0})
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # Save
-            output_path = Path(tmpdir) / "results.json"
-            results.save_json(str(output_path))
+        # Save
+        path = results.save("test_results.json")
+        assert Path(path).exists()
 
-            # Check file exists
-            assert output_path.exists()
+        # Load into new instance
+        results2 = BenchmarkResults(output_dir=results.output_dir)
+        results2.load("test_results.json")
+        assert len(results2.results) == 2
 
-            # Verify content
-            import json
-            with open(output_path) as f:
-                data = json.load(f)
-                assert "results" in data
-                assert len(data["results"]) == 2
+    def test_save_json_content(self, results):
+        """Test that saved JSON has correct content."""
+        results.add_result("dinov2", "vit_base", "cifar100", "knn", {"top1_accuracy": 85.0})
+
+        path = results.save("test_results.json")
+
+        with open(path) as f:
+            data = json.load(f)
+            assert isinstance(data, list)
+            assert len(data) == 1
+            assert data[0]["model_name"] == "dinov2"
 
 
 class TestBenchmarkResultsEdgeCases:
     """Test edge cases and error handling."""
 
-    def test_add_result_with_nan(self):
-        """Test adding NaN values."""
-        results = BenchmarkResults("test", "2025-02-09T10:30:00Z")
-        results.add_result("model", "dataset", "metric", float("nan"))
+    def test_add_result_with_none_metrics(self):
+        """Test adding result with missing metrics."""
+        results = BenchmarkResults(output_dir=tempfile.mkdtemp())
+        results.add_result("model", "vit_base", "dataset", "knn", {})
 
         assert len(results.results) == 1
-        assert results.results[0]["value"] != results.results[0]["value"]  # NaN != NaN
-
-    def test_add_result_with_inf(self):
-        """Test adding infinite values."""
-        results = BenchmarkResults("test", "2025-02-09T10:30:00Z")
-        results.add_result("model", "dataset", "metric", float("inf"))
-
-        assert len(results.results) == 1
-        assert results.results[0]["value"] == float("inf")
-
-    def test_add_result_with_negative(self):
-        """Test adding negative values."""
-        results = BenchmarkResults("test", "2025-02-09T10:30:00Z")
-        results.add_result("model", "dataset", "metric", -0.5)
-
-        assert len(results.results) == 1
-        assert results.results[0]["value"] == -0.5
+        assert results.results[0]["top1_accuracy"] is None
+        assert results.results[0]["top5_accuracy"] is None
 
     def test_special_characters_in_names(self):
         """Test handling special characters."""
-        results = BenchmarkResults("test", "2025-02-09T10:30:00Z")
+        results = BenchmarkResults(output_dir=tempfile.mkdtemp())
         results.add_result(
-            "model-v2.0",
-            "dataset/subset",
-            "metric_type",
-            0.85,
+            "model-v2.0", "vit_base", "dataset/subset", "knn",
+            {"top1_accuracy": 85.0},
         )
 
         assert len(results.results) == 1
@@ -184,12 +176,10 @@ class TestBenchmarkResultsEdgeCases:
 
     def test_unicode_in_names(self):
         """Test handling unicode characters."""
-        results = BenchmarkResults("test", "2025-02-09T10:30:00Z")
+        results = BenchmarkResults(output_dir=tempfile.mkdtemp())
         results.add_result(
-            "模型",  # "model" in Chinese
-            "数据集",  # "dataset" in Chinese
-            "指标",  # "metric" in Chinese
-            0.85,
+            "模型", "vit_base", "数据集", "knn",
+            {"top1_accuracy": 85.0},
         )
 
         assert len(results.results) == 1
@@ -200,29 +190,53 @@ class TestBenchmarkComparisonLogic:
 
     def test_rank_models_by_metric(self):
         """Test ranking models by metric."""
-        results = BenchmarkResults("test", "2025-02-09T10:30:00Z")
+        results = BenchmarkResults(output_dir=tempfile.mkdtemp())
 
-        # Add results in non-sorted order
-        results.add_result("model_a", "cifar100", "knn_top1", 0.85)
-        results.add_result("model_b", "cifar100", "knn_top1", 0.92)
-        results.add_result("model_c", "cifar100", "knn_top1", 0.80)
+        results.add_result("model_a", "vit_base", "cifar100", "knn", {"top1_accuracy": 85.0})
+        results.add_result("model_b", "vit_base", "cifar100", "knn", {"top1_accuracy": 92.0})
+        results.add_result("model_c", "vit_base", "cifar100", "knn", {"top1_accuracy": 80.0})
 
-        # Simple ranking check
-        cifar_results = results.get_dataset_results("cifar100")
+        cifar_results = results._filter(dataset="cifar100")
         assert len(cifar_results) == 3
-        # Verify all results are present
         models = {r["model_name"] for r in cifar_results}
         assert models == {"model_a", "model_b", "model_c"}
 
     def test_get_best_model_for_dataset(self):
         """Test finding best model for a dataset."""
-        results = BenchmarkResults("test", "2025-02-09T10:30:00Z")
+        results = BenchmarkResults(output_dir=tempfile.mkdtemp())
 
-        results.add_result("model_a", "cifar100", "knn_top1", 0.80)
-        results.add_result("model_b", "cifar100", "knn_top1", 0.92)
-        results.add_result("model_c", "cifar100", "knn_top1", 0.85)
+        results.add_result("model_a", "vit_base", "cifar100", "knn", {"top1_accuracy": 80.0})
+        results.add_result("model_b", "vit_base", "cifar100", "knn", {"top1_accuracy": 92.0})
+        results.add_result("model_c", "vit_base", "cifar100", "knn", {"top1_accuracy": 85.0})
 
-        cifar_results = results.get_dataset_results("cifar100")
-        best = max(cifar_results, key=lambda x: x["value"])
+        cifar_results = results._filter(dataset="cifar100")
+        best = max(cifar_results, key=lambda x: x["top1_accuracy"])
         assert best["model_name"] == "model_b"
-        assert best["value"] == 0.92
+        assert best["top1_accuracy"] == 92.0
+
+    def test_verify_against_published_within_tolerance(self):
+        """Test verification against published baselines."""
+        results = BenchmarkResults(output_dir=tempfile.mkdtemp())
+
+        # Add a result close to published baseline for dinov2 vit_base imagenet1k linear_probe (84.5)
+        results.add_result(
+            "dinov2", "vit_base", "imagenet1k", "linear_probe",
+            {"top1_accuracy": 84.0},
+        )
+
+        flagged = results.verify_against_published(tolerance=2.0)
+        assert len(flagged) == 0  # within tolerance
+
+    def test_verify_against_published_exceeds_tolerance(self):
+        """Test verification flags results outside tolerance."""
+        results = BenchmarkResults(output_dir=tempfile.mkdtemp())
+
+        # Add a result far from published baseline
+        results.add_result(
+            "dinov2", "vit_base", "imagenet1k", "linear_probe",
+            {"top1_accuracy": 70.0},  # published is 84.5, delta = -14.5
+        )
+
+        flagged = results.verify_against_published(tolerance=2.0)
+        assert len(flagged) == 1
+        assert flagged[0]["exceeds_tolerance"] is True
