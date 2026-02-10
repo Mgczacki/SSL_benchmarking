@@ -1,0 +1,88 @@
+# ===========================================================================
+# JEPA Benchmark -- Default Configuration
+# ===========================================================================
+# This configuration is tuned for quick iteration on smaller datasets
+# (e.g. CIFAR-100).  For ImageNet-scale evaluation see imagenet_full.yaml.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# General settings
+# ---------------------------------------------------------------------------
+seed: 42
+device: "auto"  # auto, cuda, mps, cpu
+num_workers: 4
+output_dir: "./results"
+cache_dir: "./cache/features"
+wandb:
+  enabled: false
+  project: "jepa-benchmark"
+  entity: null
+
+# ---------------------------------------------------------------------------
+# Dataset settings
+# ---------------------------------------------------------------------------
+datasets:
+  data_root: "./data"
+  primary: "cifar100"  # cifar100, imagenet1k, imagenet100, etc.
+  image_size: 224
+  batch_size: 256
+
+# ---------------------------------------------------------------------------
+# Models to evaluate
+# ---------------------------------------------------------------------------
+models:
+  - name: "dinov2"
+    arch: "vit_base"
+    checkpoint: null  # auto-download from HuggingFace
+  - name: "dinov1"
+    arch: "vit_base"
+    checkpoint: null  # auto-download via torch.hub
+  - name: "mae"
+    arch: "vit_base"
+    checkpoint: null  # path to local checkpoint
+  - name: "ijepa"
+    arch: "vit_huge"
+    checkpoint: null  # path to local checkpoint
+  - name: "ibot"
+    arch: "vit_base"
+    checkpoint: null  # path to local checkpoint
+  - name: "lejepa"
+    arch: "vit_huge"
+    checkpoint: null  # path to local checkpoint
+
+# ---------------------------------------------------------------------------
+# Evaluation protocols
+# ---------------------------------------------------------------------------
+evaluation:
+  knn:
+    enabled: true
+    k_values: [10, 20, 200]
+    temperature: 0.07
+
+  linear_probe:
+    enabled: true
+    lr_sweep: [0.001, 0.003, 0.01, 0.03, 0.1, 0.3, 1.0, 3.0, 10.0]
+    epochs: 100
+    batch_size: 256
+    optimizer: "sgd"
+    momentum: 0.9
+    weight_decay: 0.0
+    lr_schedule: "cosine"
+    normalize_features: true
+
+  quick_linear_probe:
+    enabled: true
+    C_values: [0.001, 0.01, 0.1, 1.0, 10.0, 100.0]
+
+  finetune:
+    enabled: false
+    lr: 0.001
+    weight_decay: 0.05
+    epochs: 100
+    batch_size: 64
+    layer_decay: 0.65
+    warmup_epochs: 5
+
+  low_shot:
+    enabled: false
+    percentages: [0.01, 0.1]
